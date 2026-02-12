@@ -78,6 +78,6 @@ async def start(interaction: discord.Interaction, seconds: int):
         except discord.Forbidden:
             await interaction.channel.send("I couldn't DM the Impostor! They need to open their DMs.")
     else:
-        await interaction.channel.send("Nobody joined the selection.")
+        await interaction.channel.send("Nobody joined the selection!")
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
