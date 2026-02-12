@@ -18,7 +18,7 @@ class SecretPickerBot(commands.Bot):
         print(f"✅ Synced slash commands for {self.user}")
 
     async def on_ready(self):
-        activity = discord.Activity(type=discord.ActivityType.watching, name="for the chosen one 🤫")
+        activity = discord.Activity(type=discord.ActivityType.watching, name="/start")
         await self.change_presence(status=discord.Status.online, activity=activity)
         print(f'Logged in as {self.user} (ID: {self.user.id})')
 
