@@ -74,6 +74,4 @@ async def start(interaction: discord.Interaction, seconds: int):
     else:
         await interaction.channel.send("Nobody joined the selection.")
 
-MY_TOKEN = "MTQ3MTMzMDUwMTQyNjk0MjE5NQ.GHV7Ig.x6Bh-Wnw43zEGvc9MelXcM0H9YNtp3va1SL9qM"
-
-bot.run(MY_TOKEN)
+bot.run(os.environ.get('DISCORD_TOKEN'))
