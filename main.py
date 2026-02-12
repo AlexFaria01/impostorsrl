@@ -17,6 +17,11 @@ class SecretPickerBot(commands.Bot):
         await self.tree.sync()
         print(f"✅ Synced slash commands for {self.user}")
 
+    async def on_ready(self):
+        activity = discord.Activity(type=discord.ActivityType.watching, name="for the Impostor 🕵️")
+        await self.change_presence(status=discord.Status.online, activity=activity)
+        print(f'Logged in as {self.user}')
+
 bot = SecretPickerBot()
 
 # --- VOTING LOGIC ---
@@ -63,7 +68,9 @@ class MatchOverView(discord.ui.View):
         self.match_finished.set()
         await interaction.response.send_message("Blue Team declared winners!", ephemeral=True)
 
-    @discord.ui.button(label="Match Finished (Orange Won)", style=discord.ButtonStyle.orange)
+    # FIXED: Changed ButtonStyle.orange to ButtonStyle.secondary (Grey) 
+    # since Discord doesn't have an orange button.
+    @discord.ui.button(label="Match Finished (Orange Won)", style=discord.ButtonStyle.secondary)
     async def orange_win(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.winning_team = "Orange"
         self.match_finished.set()
@@ -128,27 +135,28 @@ async def start(interaction: discord.Interaction, seconds: int):
         await v_view.wait()
         
         if not v_view.votes:
-            await interaction.channel.send("No votes? Restarting vote...")
+            await interaction.channel.send("No votes cast! The Impostor escapes. Re-voting for security...")
             continue
 
         max_v = max(v_view.votes.values())
-        winners = [bot.get_user(u_id) for u_id, count in v_view.votes.items() if count == max_v]
+        vote_winners = [bot.get_user(u_id) for u_id, count in v_view.votes.items() if count == max_v]
 
-        if len(winners) > 1:
-            await interaction.channel.send(f"⚖️ Tie between: {', '.join([w.display_name for w in winners])}. Re-voting...")
-            current_targets = winners
+        if len(vote_winners) > 1:
+            await interaction.channel.send(f"⚖️ Tie between: {', '.join([w.display_name for w in vote_winners])}. Re-voting...")
+            current_targets = vote_winners
             continue
         
-        ejected = winners[0]
+        ejected = vote_winners[0]
         break
 
     # 5. FINAL RESULTS
+    # Impostor wins if they weren't ejected AND they were actually on the losing team
     impostor_won = (ejected.id != impostor.id) and (impostor in losers)
     result_title = "🚩 IMPOSTOR WINS" if impostor_won else "✅ CREWMATES WIN"
     
     final_embed = discord.Embed(title=result_title, color=0x2f3136)
     final_embed.add_field(name="The Impostor was:", value=impostor.mention)
-    final_embed.add_field(name="Ejected:", value=ejected.mention)
+    final_embed.add_field(name="Ejected Member:", value=ejected.mention)
     await interaction.channel.send(embed=final_embed)
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
