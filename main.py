@@ -17,82 +17,138 @@ class SecretPickerBot(commands.Bot):
         await self.tree.sync()
         print(f"✅ Synced slash commands for {self.user}")
 
-    async def on_ready(self):
-        activity = discord.Activity(type=discord.ActivityType.watching, name="/start")
-        await self.change_presence(status=discord.Status.online, activity=activity)
-        print(f'Logged in as {self.user}')
-
 bot = SecretPickerBot()
 
-# Updated View to handle live updates
-class SecretGiveawayView(discord.ui.View):
+# --- VOTING LOGIC ---
+class VoteDropdown(discord.ui.Select):
+    def __init__(self, losers):
+        options = [discord.SelectOption(label=p.display_name, value=str(p.id)) for p in losers]
+        super().__init__(placeholder="Vote for the Impostor (Loser Team Only)", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        view = self.view
+        if interaction.user.id not in [p.id for p in view.all_players]:
+            return await interaction.response.send_message("You aren't in this game!", ephemeral=True)
+        if interaction.user.id in view.voted_users:
+            return await interaction.response.send_message("Already voted!", ephemeral=True)
+
+        view.votes[int(self.values[0])] = view.votes.get(int(self.values[0]), 0) + 1
+        view.voted_users.add(interaction.user.id)
+        
+        remaining = len(view.all_players) - len(view.voted_users)
+        view.embed.set_footer(text=f"Waiting for {remaining} more votes...")
+        await interaction.response.edit_message(embed=view.embed, view=view)
+        if len(view.voted_users) == len(view.all_players):
+            view.stop()
+
+class VoteView(discord.ui.View):
+    def __init__(self, targets, all_players, embed):
+        super().__init__(timeout=30)
+        self.all_players = all_players
+        self.embed = embed
+        self.votes = {}
+        self.voted_users = set()
+        self.add_item(VoteDropdown(targets))
+
+# --- MATCH CONTROL ---
+class MatchOverView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.match_finished = asyncio.Event()
+        self.winning_team = None
+
+    @discord.ui.button(label="Match Finished (Blue Won)", style=discord.ButtonStyle.primary)
+    async def blue_win(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.winning_team = "Blue"
+        self.match_finished.set()
+        await interaction.response.send_message("Blue Team declared winners!", ephemeral=True)
+
+    @discord.ui.button(label="Match Finished (Orange Won)", style=discord.ButtonStyle.orange)
+    async def orange_win(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.winning_team = "Orange"
+        self.match_finished.set()
+        await interaction.response.send_message("Orange Team declared winners!", ephemeral=True)
+
+# --- ENTRY VIEW ---
+class EntryView(discord.ui.View):
     def __init__(self, timeout, embed, interaction):
         super().__init__(timeout=timeout)
         self.participants = []
-        self.initial_embed = embed
-        self.initial_interaction = interaction
+        self.embed = embed
+        self.interaction = interaction
 
     @discord.ui.button(label="Enter", style=discord.ButtonStyle.danger, emoji="🥷")
     async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user not in self.participants:
             self.participants.append(interaction.user)
-            
-            # --- LIVE UPDATE LOGIC ---
-            # We update the footer of the embed to show the current pool size
-            self.initial_embed.set_footer(text=f"Total participants in pool: {len(self.participants)}")
-            await self.initial_interaction.edit_original_response(embed=self.initial_embed)
-            
-            await interaction.response.send_message(f"You've entered the pool!", ephemeral=True)
-        else:
-            await interaction.response.send_message("You're already in!", ephemeral=True)
+            self.embed.set_footer(text=f"Total: {len(self.participants)}")
+            await self.interaction.edit_original_response(embed=self.embed)
+            await interaction.response.send_message("Joined!", ephemeral=True)
 
-@bot.tree.command(name="start", description="Starts the Impostor selection")
-@app_commands.describe(seconds="How many seconds the entry period should last")
+@bot.tree.command(name="start", description="Start Rocket League Impostor Game")
 async def start(interaction: discord.Interaction, seconds: int):
-    end_time = int(time.time() + seconds)
-    
-    # Create the embed
-    embed = discord.Embed(
-        title="Impostor Selection",
-        description=(
-            f"An Impostor will be chosen from the pool.\n\n"
-            f"**Ends:** <t:{end_time}:R>\n"
-            f"**Hosted by:** {interaction.user.mention}"
-        ),
-        color=0xe74c3c # Impostor Red
-    )
-    # Set the starting footer
-    embed.set_footer(text="Total participants in pool: 0")
-    
-    # Pass the embed and interaction into the view so it can edit the message
-    view = SecretGiveawayView(timeout=seconds, embed=embed, interaction=interaction)
-    
-    await interaction.response.send_message(embed=embed, view=view)
-    
+    # 1. ENTRY
+    entry_embed = discord.Embed(title="🚀 RL Impostor: Entry Phase", description=f"Entry closes <t:{int(time.time()+seconds)}:R>", color=0x3498db)
+    view = EntryView(seconds, entry_embed, interaction)
+    await interaction.response.send_message(embed=entry_embed, view=view)
     await asyncio.sleep(seconds)
-    
-    view.stop()
-    for item in view.children:
-        item.disabled = True
-    
-    if view.participants:
-        winner = random.choice(view.participants)
-        
-        # Final update to show the period is over
-        end_embed = discord.Embed(
-            title="An Impostor has been selected",
-            description=f"The period has ended. **{len(view.participants)}** people joined.\n\nThe Impostor has been notified!",
-            color=0x2f3136
-        )
-        await interaction.edit_original_response(embed=end_embed, view=view)
 
-        try:
-            await winner.send("You are the Impostor!")
-        except discord.Forbidden:
-            await interaction.channel.send(f"I couldn't DM the Impostor ({winner.mention})!")
-    else:
-        # Message if nobody joins
-        cancel_embed = discord.Embed(title="Cancelled", description="Nobody joined the pool.", color=0x2f3136)
-        await interaction.edit_original_response(embed=cancel_embed, view=view)
+    if len(view.participants) < 2 or len(view.participants) % 2 != 0:
+        return await interaction.channel.send("❌ Needs an even number of players (2, 4, 6...).")
+
+    # 2. TEAM SPLIT & IMPOSTOR
+    random.shuffle(view.participants)
+    mid = len(view.participants) // 2
+    blue_team = view.participants[:mid]
+    orange_team = view.participants[mid:]
+    impostor = random.choice(view.participants)
+    
+    await impostor.send("🤫 **YOU ARE THE IMPOSTOR.** Your goal: Make your team lose without getting voted out.")
+
+    teams_embed = discord.Embed(title="🎮 Teams Assigned", color=0x2ecc71)
+    teams_embed.add_field(name="🔵 Blue Team", value="\n".join([p.mention for p in blue_team]))
+    teams_embed.add_field(name="🟠 Orange Team", value="\n".join([p.mention for p in orange_team]))
+    
+    match_view = MatchOverView()
+    await interaction.channel.send(embed=teams_embed, view=match_view)
+
+    # 3. WAIT FOR MATCH
+    await match_view.match_finished.wait()
+    
+    # Identify Loser Team
+    losers = orange_team if match_view.winning_team == "Blue" else blue_team
+    
+    # 4. VOTING LOOP
+    current_targets = losers
+    while True:
+        vote_embed = discord.Embed(title="🗳️ Voting Phase (30s)", description="Only the losing team can be voted!", color=0xf1c40f)
+        v_view = VoteView(current_targets, view.participants, vote_embed)
+        v_msg = await interaction.channel.send(embed=vote_embed, view=v_view)
+        
+        await v_view.wait()
+        
+        if not v_view.votes:
+            await interaction.channel.send("No votes? Restarting vote...")
+            continue
+
+        max_v = max(v_view.votes.values())
+        winners = [bot.get_user(u_id) for u_id, count in v_view.votes.items() if count == max_v]
+
+        if len(winners) > 1:
+            await interaction.channel.send(f"⚖️ Tie between: {', '.join([w.display_name for w in winners])}. Re-voting...")
+            current_targets = winners
+            continue
+        
+        ejected = winners[0]
+        break
+
+    # 5. FINAL RESULTS
+    impostor_won = (ejected.id != impostor.id) and (impostor in losers)
+    result_title = "🚩 IMPOSTOR WINS" if impostor_won else "✅ CREWMATES WIN"
+    
+    final_embed = discord.Embed(title=result_title, color=0x2f3136)
+    final_embed.add_field(name="The Impostor was:", value=impostor.mention)
+    final_embed.add_field(name="Ejected:", value=ejected.mention)
+    await interaction.channel.send(embed=final_embed)
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
