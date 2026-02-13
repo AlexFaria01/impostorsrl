@@ -25,8 +25,8 @@ class SecretPickerBot(commands.Bot):
 bot = SecretPickerBot()
 
 # --- CONSTANTS & GLOBALS ---
-EMBED_COLOR = 0x2b2d31 # Discord's native dark grey background
-active_matches = {}    # Tracks ongoing games by channel ID
+EMBED_COLOR = 0x2b2d31 
+active_matches = {}    
 
 # --- VOTING LOGIC ---
 class VoteDropdown(discord.ui.Select):
@@ -45,11 +45,16 @@ class VoteDropdown(discord.ui.Select):
         view.voted_users.add(interaction.user.id)
         
         remaining = len(view.all_players) - len(view.voted_users)
-        view.embed.set_footer(text=f"Awaiting {remaining} remaining vote(s).")
-        await interaction.response.edit_message(embed=view.embed, view=view)
         
-        if len(view.voted_users) == len(view.all_players):
+        # If everyone has voted, clean up immediately
+        if remaining == 0:
+            view.embed.set_footer(text="Voting concluded.")
+            view.clear_items() # Removes the dropdown
+            await interaction.response.edit_message(embed=view.embed, view=view)
             view.stop()
+        else:
+            view.embed.set_footer(text=f"Awaiting {remaining} remaining vote(s).")
+            await interaction.response.edit_message(embed=view.embed, view=view)
 
 class VoteView(discord.ui.View):
     def __init__(self, targets, all_players, embed):
@@ -77,14 +82,24 @@ class MatchOverView(discord.ui.View):
     @discord.ui.button(label="Team 1 Defeated", style=discord.ButtonStyle.secondary)
     async def t1_lose(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.losing_team = "Team 1"
+        self.clear_items() # Remove the buttons
+        
+        embed = interaction.message.embeds[0]
+        embed.description = "Match concluded. Team 1 was defeated."
+        await interaction.response.edit_message(embed=embed, view=self)
+        
         self.match_finished.set()
-        await interaction.response.send_message("Match result recorded: Team 1 Defeated.", ephemeral=True)
 
     @discord.ui.button(label="Team 2 Defeated", style=discord.ButtonStyle.secondary)
     async def t2_lose(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.losing_team = "Team 2"
+        self.clear_items() # Remove the buttons
+        
+        embed = interaction.message.embeds[0]
+        embed.description = "Match concluded. Team 2 was defeated."
+        await interaction.response.edit_message(embed=embed, view=self)
+        
         self.match_finished.set()
-        await interaction.response.send_message("Match result recorded: Team 2 Defeated.", ephemeral=True)
 
 # --- ENTRY VIEW ---
 class EntryView(discord.ui.View):
@@ -107,11 +122,9 @@ class EntryView(discord.ui.View):
 
 @bot.tree.command(name="start", description="Initialize a professional Rocket League Impostor match")
 async def start(interaction: discord.Interaction, seconds: int):
-    # Ensure only one game runs per channel
     if interaction.channel_id in active_matches:
         return await interaction.response.send_message("A match protocol is already active in this channel.", ephemeral=True)
     
-    # Register this task in the system
     active_matches[interaction.channel_id] = asyncio.current_task()
 
     try:
@@ -123,7 +136,13 @@ async def start(interaction: discord.Interaction, seconds: int):
         )
         view = EntryView(seconds, entry_embed, interaction)
         await interaction.response.send_message(embed=entry_embed, view=view)
+        
         await asyncio.sleep(seconds)
+
+        view.stop()
+        view.clear_items() 
+        entry_embed.description = "Registration period closed."
+        await interaction.edit_original_response(embed=entry_embed, view=view)
 
         if len(view.participants) < 2 or len(view.participants) % 2 != 0:
             return await interaction.channel.send("Process terminated. An even number of participants is required.")
@@ -176,7 +195,12 @@ async def start(interaction: discord.Interaction, seconds: int):
             )
             v_view = VoteView(current_targets, view.participants, vote_embed)
             v_msg = await interaction.channel.send(embed=vote_embed, view=v_view)
+            
             await v_view.wait()
+            
+            # --- NEW: Cleanup the dropdown when voting finishes ---
+            v_view.clear_items()
+            await v_msg.edit(view=v_view)
             
             if not v_view.votes:
                 await interaction.channel.send("Zero votes registered. Initiating recount protocol...")
@@ -202,31 +226,25 @@ async def start(interaction: discord.Interaction, seconds: int):
         await interaction.channel.send(embed=final_embed)
 
     except asyncio.CancelledError:
-        # This triggers instantly if an admin runs /cancel
         cancel_embed = discord.Embed(
             title="Protocol Terminated", 
             description="The match protocol was forcefully aborted by a system administrator.", 
             color=EMBED_COLOR
         )
         await interaction.channel.send(embed=cancel_embed)
-        raise # Ensures the task closes properly
+        raise
 
     finally:
-        # Cleanup: Remove the task from the system when the game naturally ends or is cancelled
         if interaction.channel_id in active_matches:
             del active_matches[interaction.channel_id]
 
 
 @bot.tree.command(name="cancel", description="Administrator Override: Terminate the active match in this channel.")
-@app_commands.default_permissions(administrator=True) # Locks command to Admins
+@app_commands.default_permissions(administrator=True)
 async def cancel(interaction: discord.Interaction):
     if interaction.channel_id in active_matches:
-        # Instantly stops the /start task
         active_matches[interaction.channel_id].cancel()
-        
-        # Remove from dictionary
         del active_matches[interaction.channel_id]
-        
         await interaction.response.send_message("Termination signal dispatched.", ephemeral=True)
     else:
         await interaction.response.send_message("No active match protocols detected in this channel.", ephemeral=True)
