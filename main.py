@@ -180,7 +180,7 @@ async def start(interaction: discord.Interaction, seconds: int):
         if impostor not in losers:
             fail_embed = discord.Embed(
                 title="Impostor Defeated",
-                description=f"Target: {impostor.mention}\nReason: The Impostor's assigned team was victorious. The objective was failed.",
+                description=f"Impostor: {impostor.mention}\nReason: The Impostor's assigned team was victorious.",
                 color=EMBED_COLOR
             )
             return await interaction.channel.send(embed=fail_embed)
