@@ -222,7 +222,7 @@ async def start(interaction: discord.Interaction, seconds: int):
         result_title = "Impostor Victorious" if impostor_won else "Impostor Defeated"
         final_embed = discord.Embed(title=result_title, color=EMBED_COLOR)
         final_embed.add_field(name="Chosen Player:", value=ejected.mention)
-	final_embed.add_field(name="Impostor:", value=impostor.mention)
+        final_embed.add_field(name="Impostor:", value=impostor.mention)
         await interaction.channel.send(embed=final_embed)
 
     except asyncio.CancelledError:
