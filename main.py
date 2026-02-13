@@ -48,19 +48,27 @@ class VoteDropdown(discord.ui.Select):
 
 class VoteView(discord.ui.View):
     def __init__(self, targets, all_players, embed):
-        super().__init__(timeout=45) # Increased to 45s for more discussion
+        super().__init__(timeout=45)
         self.all_players = all_players
         self.embed = embed
         self.votes = {}
         self.voted_users = set()
         self.add_item(VoteDropdown(targets))
 
-# --- MATCH CONTROL ---
+# --- MATCH CONTROL (UPDATED WITH HOST LOCK) ---
 class MatchOverView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, host):
         super().__init__(timeout=None)
+        self.host = host # Store the person who started the game
         self.match_finished = asyncio.Event()
         self.losing_team = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # If the person clicking isn't the host, stop them
+        if interaction.user != self.host:
+            await interaction.response.send_message("Only the person who started the game can declare the losers!", ephemeral=True)
+            return False
+        return True
 
     @discord.ui.button(label="Team 1 Lost", style=discord.ButtonStyle.danger)
     async def t1_lose(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -92,7 +100,7 @@ class EntryView(discord.ui.View):
 
 @bot.tree.command(name="start", description="Start Rocket League Impostor Game")
 async def start(interaction: discord.Interaction, seconds: int):
-    # 1. ENTRY
+    # 1. ENTRY PHASE
     entry_embed = discord.Embed(title="🏎️ Rocket League Impostor", description=f"Join up! Closing <t:{int(time.time()+seconds)}:R>", color=0x3498db)
     view = EntryView(seconds, entry_embed, interaction)
     await interaction.response.send_message(embed=entry_embed, view=view)
@@ -111,50 +119,44 @@ async def start(interaction: discord.Interaction, seconds: int):
     impostor_team_name = "Team 1" if impostor in team1 else "Team 2"
     await impostor.send(f"🤫 **YOU ARE THE IMPOSTOR.**\nYou are on **{impostor_team_name}**. Make them lose!")
 
-    teams_embed = discord.Embed(title="🎮 Teams Assigned", description="Play your match and report who lost!", color=0x2ecc71)
+    teams_embed = discord.Embed(title="🎮 Teams Assigned", description="Play your match and the host will report who lost!", color=0x2ecc71)
     teams_embed.add_field(name="👥 Team 1", value="\n".join([p.mention for p in team1]))
     teams_embed.add_field(name="👥 Team 2", value="\n".join([p.mention for p in team2]))
     
-    match_view = MatchOverView()
+    # Pass the person who ran /start as the host
+    match_view = MatchOverView(host=interaction.user)
     await interaction.channel.send(embed=teams_embed, view=match_view)
 
     # 3. WAIT FOR MATCH RESULT
     await match_view.match_finished.wait()
     
-    # 4. CHECK AUTO-LOSS CONDITION
+    # 4. AUTO-LOSS CHECK
     losers = team1 if match_view.losing_team == "Team 1" else team2
-    
     if impostor not in losers:
-        # Impostor's team won -> Impostor loses automatically
         fail_embed = discord.Embed(
             title="🚩 IMPOSTOR FAILED",
-            description=f"The Impostor ({impostor.mention}) was on the winning team!\n\nThey failed their mission to sabotage the match.",
+            description=f"The Impostor ({impostor.mention}) was on the winning team!\n\nThey accidentally helped their team win.",
             color=0x3498db
         )
         return await interaction.channel.send(embed=fail_embed)
 
-    # 5. VOTING LOOP (Only happens if Impostor is in the losing team)
+    # 5. VOTING PHASE
     current_targets = losers
     while True:
-        vote_embed = discord.Embed(
-            title="🗳️ Sabotage Found! Voting Open",
-            description=f"The Impostor is among the losers: {', '.join([p.display_name for p in losers])}\n\nVote for who you think it is!",
-            color=0xf1c40f
-        )
+        vote_embed = discord.Embed(title="🗳️ Sabotage Found! Voting Open", color=0xf1c40f)
         v_view = VoteView(current_targets, view.participants, vote_embed)
         v_msg = await interaction.channel.send(embed=vote_embed, view=v_view)
-        
         await v_view.wait()
         
         if not v_view.votes:
-            await interaction.channel.send("No votes? The Impostor escaped. Re-voting...")
+            await interaction.channel.send("No votes? Re-voting...")
             continue
 
         max_v = max(v_view.votes.values())
         vote_winners = [bot.get_user(u_id) for u_id, count in v_view.votes.items() if count == max_v]
 
         if len(vote_winners) > 1:
-            await interaction.channel.send(f"⚖️ Tie between: {', '.join([w.display_name for w in vote_winners])}. Tie-breaker vote starting...")
+            await interaction.channel.send(f"⚖️ Tie between: {', '.join([w.display_name for w in vote_winners])}. Re-voting...")
             current_targets = vote_winners
             continue
         
@@ -164,7 +166,6 @@ async def start(interaction: discord.Interaction, seconds: int):
     # 6. FINAL RESULTS
     impostor_won = (ejected.id != impostor.id)
     result_title = "🚩 IMPOSTOR WINS" if impostor_won else "✅ CREWMATES WIN"
-    
     final_embed = discord.Embed(title=result_title, color=0x2f3136)
     final_embed.add_field(name="The Impostor was:", value=impostor.mention)
     final_embed.add_field(name="The Group Ejected:", value=ejected.mention)
