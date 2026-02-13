@@ -221,14 +221,14 @@ async def start(interaction: discord.Interaction, seconds: int):
         impostor_won = (ejected.id != impostor.id)
         result_title = "Impostor Victorious" if impostor_won else "Group Victorious"
         final_embed = discord.Embed(title=result_title, color=EMBED_COLOR)
-        final_embed.add_field(name="Confirmed Impostor:", value=impostor.mention)
-        final_embed.add_field(name="Player Ejected:", value=ejected.mention)
+        final_embed.add_field(name="Impostor:", value=impostor.mention)
+        final_embed.add_field(name="Chosen Player:", value=ejected.mention)
         await interaction.channel.send(embed=final_embed)
 
     except asyncio.CancelledError:
         cancel_embed = discord.Embed(
-            title="Protocol Terminated", 
-            description="The match protocol was forcefully aborted by a system administrator.", 
+            title="Matched Canceled", 
+            description="The match was forcefully canceled by an admin.", 
             color=EMBED_COLOR
         )
         await interaction.channel.send(embed=cancel_embed)
@@ -247,7 +247,7 @@ async def cancel(interaction: discord.Interaction):
         del active_matches[interaction.channel_id]
         await interaction.response.send_message("Termination signal dispatched.", ephemeral=True)
     else:
-        await interaction.response.send_message("No active match protocols detected in this channel.", ephemeral=True)
+        await interaction.response.send_message("No active match detected in this channel.", ephemeral=True)
 
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
