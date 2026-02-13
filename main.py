@@ -15,34 +15,39 @@ class SecretPickerBot(commands.Bot):
 
     async def setup_hook(self):
         await self.tree.sync()
-        print(f"✅ Synced slash commands for {self.user}")
+        print(f"System: Synced slash commands for {self.user}")
 
     async def on_ready(self):
-        activity = discord.Activity(type=discord.ActivityType.watching, name="for the Impostor 🕵️")
+        activity = discord.Activity(type=discord.ActivityType.watching, name="Match Processing")
         await self.change_presence(status=discord.Status.online, activity=activity)
-        print(f'Logged in as {self.user}')
+        print(f'System: Logged in as {self.user}')
 
 bot = SecretPickerBot()
+
+# --- CONSTANTS & GLOBALS ---
+EMBED_COLOR = 0x2b2d31 # Discord's native dark grey background
+active_matches = {}    # Tracks ongoing games by channel ID
 
 # --- VOTING LOGIC ---
 class VoteDropdown(discord.ui.Select):
     def __init__(self, losers):
         options = [discord.SelectOption(label=p.display_name, value=str(p.id)) for p in losers]
-        super().__init__(placeholder="Who sabotaged the game?", options=options)
+        super().__init__(placeholder="Select the suspected player...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         view = self.view
         if interaction.user.id not in [p.id for p in view.all_players]:
-            return await interaction.response.send_message("You aren't in this game!", ephemeral=True)
+            return await interaction.response.send_message("Unauthorized. You are not in this match.", ephemeral=True)
         if interaction.user.id in view.voted_users:
-            return await interaction.response.send_message("Already voted!", ephemeral=True)
+            return await interaction.response.send_message("Vote already registered.", ephemeral=True)
 
         view.votes[int(self.values[0])] = view.votes.get(int(self.values[0]), 0) + 1
         view.voted_users.add(interaction.user.id)
         
         remaining = len(view.all_players) - len(view.voted_users)
-        view.embed.set_footer(text=f"Waiting for {remaining} more votes...")
+        view.embed.set_footer(text=f"Awaiting {remaining} remaining vote(s).")
         await interaction.response.edit_message(embed=view.embed, view=view)
+        
         if len(view.voted_users) == len(view.all_players):
             view.stop()
 
@@ -55,32 +60,31 @@ class VoteView(discord.ui.View):
         self.voted_users = set()
         self.add_item(VoteDropdown(targets))
 
-# --- MATCH CONTROL (UPDATED WITH HOST LOCK) ---
+# --- MATCH CONTROL ---
 class MatchOverView(discord.ui.View):
     def __init__(self, host):
         super().__init__(timeout=None)
-        self.host = host # Store the person who started the game
+        self.host = host 
         self.match_finished = asyncio.Event()
         self.losing_team = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # If the person clicking isn't the host, stop them
         if interaction.user != self.host:
-            await interaction.response.send_message("Only the person who started the game can declare the losers!", ephemeral=True)
+            await interaction.response.send_message("Authorization denied. Only the host can declare the match result.", ephemeral=True)
             return False
         return True
 
-    @discord.ui.button(label="Team 1 Lost", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Team 1 Defeated", style=discord.ButtonStyle.secondary)
     async def t1_lose(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.losing_team = "Team 1"
         self.match_finished.set()
-        await interaction.response.send_message("Team 1 marked as Losers.", ephemeral=True)
+        await interaction.response.send_message("Match result recorded: Team 1 Defeated.", ephemeral=True)
 
-    @discord.ui.button(label="Team 2 Lost", style=discord.ButtonStyle.danger)
+    @discord.ui.button(label="Team 2 Defeated", style=discord.ButtonStyle.secondary)
     async def t2_lose(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.losing_team = "Team 2"
         self.match_finished.set()
-        await interaction.response.send_message("Team 2 marked as Losers.", ephemeral=True)
+        await interaction.response.send_message("Match result recorded: Team 2 Defeated.", ephemeral=True)
 
 # --- ENTRY VIEW ---
 class EntryView(discord.ui.View):
@@ -90,85 +94,142 @@ class EntryView(discord.ui.View):
         self.embed = embed
         self.interaction = interaction
 
-    @discord.ui.button(label="Enter", style=discord.ButtonStyle.success, emoji="⚽")
+    @discord.ui.button(label="Join Pool", style=discord.ButtonStyle.secondary)
     async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user not in self.participants:
             self.participants.append(interaction.user)
-            self.embed.set_footer(text=f"Total: {len(self.participants)}")
+            self.embed.set_footer(text=f"Current Participants: {len(self.participants)}")
             await self.interaction.edit_original_response(embed=self.embed)
-            await interaction.response.send_message("You're in!", ephemeral=True)
+            await interaction.response.send_message("Registration confirmed.", ephemeral=True)
 
-@bot.tree.command(name="start", description="Start Rocket League Impostor Game")
+
+# --- COMMANDS ---
+
+@bot.tree.command(name="start", description="Initialize a professional Rocket League Impostor match")
 async def start(interaction: discord.Interaction, seconds: int):
-    # 1. ENTRY PHASE
-    entry_embed = discord.Embed(title="🏎️ Rocket League Impostor", description=f"Join up! Closing <t:{int(time.time()+seconds)}:R>", color=0x3498db)
-    view = EntryView(seconds, entry_embed, interaction)
-    await interaction.response.send_message(embed=entry_embed, view=view)
-    await asyncio.sleep(seconds)
-
-    if len(view.participants) < 2 or len(view.participants) % 2 != 0:
-        return await interaction.channel.send("❌ Error: Game requires an even number of players.")
-
-    # 2. ASSIGN TEAMS & IMPOSTOR
-    random.shuffle(view.participants)
-    mid = len(view.participants) // 2
-    team1 = view.participants[:mid]
-    team2 = view.participants[mid:]
-    impostor = random.choice(view.participants)
+    # Ensure only one game runs per channel
+    if interaction.channel_id in active_matches:
+        return await interaction.response.send_message("A match protocol is already active in this channel.", ephemeral=True)
     
-    impostor_team_name = "Team 1" if impostor in team1 else "Team 2"
-    await impostor.send(f"🤫 **YOU ARE THE IMPOSTOR.**\nYou are on **{impostor_team_name}**. Make them lose!")
+    # Register this task in the system
+    active_matches[interaction.channel_id] = asyncio.current_task()
 
-    teams_embed = discord.Embed(title="🎮 Teams Assigned", description="Play your match and the host will report who lost!", color=0x2ecc71)
-    teams_embed.add_field(name="👥 Team 1", value="\n".join([p.mention for p in team1]))
-    teams_embed.add_field(name="👥 Team 2", value="\n".join([p.mention for p in team2]))
-    
-    # Pass the person who ran /start as the host
-    match_view = MatchOverView(host=interaction.user)
-    await interaction.channel.send(embed=teams_embed, view=match_view)
-
-    # 3. WAIT FOR MATCH RESULT
-    await match_view.match_finished.wait()
-    
-    # 4. AUTO-LOSS CHECK
-    losers = team1 if match_view.losing_team == "Team 1" else team2
-    if impostor not in losers:
-        fail_embed = discord.Embed(
-            title="🚩 IMPOSTOR FAILED",
-            description=f"The Impostor ({impostor.mention}) was on the winning team!\n\nThey accidentally helped their team win.",
-            color=0x3498db
+    try:
+        # 1. ENTRY PHASE
+        entry_embed = discord.Embed(
+            title="Match Initialization", 
+            description=f"Registration period closes <t:{int(time.time()+seconds)}:R>.", 
+            color=EMBED_COLOR
         )
-        return await interaction.channel.send(embed=fail_embed)
+        view = EntryView(seconds, entry_embed, interaction)
+        await interaction.response.send_message(embed=entry_embed, view=view)
+        await asyncio.sleep(seconds)
 
-    # 5. VOTING PHASE
-    current_targets = losers
-    while True:
-        vote_embed = discord.Embed(title="🗳️ Sabotage Found! Voting Open", color=0xf1c40f)
-        v_view = VoteView(current_targets, view.participants, vote_embed)
-        v_msg = await interaction.channel.send(embed=vote_embed, view=v_view)
-        await v_view.wait()
+        if len(view.participants) < 2 or len(view.participants) % 2 != 0:
+            return await interaction.channel.send("Process terminated. An even number of participants is required.")
+
+        # 2. ASSIGN TEAMS & IMPOSTOR
+        random.shuffle(view.participants)
+        mid = len(view.participants) // 2
+        team1 = view.participants[:mid]
+        team2 = view.participants[mid:]
+        impostor = random.choice(view.participants)
         
-        if not v_view.votes:
-            await interaction.channel.send("No votes? Re-voting...")
-            continue
+        impostor_team_name = "Team 1" if impostor in team1 else "Team 2"
+        await impostor.send(
+            "**CLASSIFIED DIRECTIVE**\n"
+            f"Role: Impostor\nAssignment: {impostor_team_name}\n"
+            "Objective: Ensure the defeat of your assigned team without being detected by the group."
+        )
 
-        max_v = max(v_view.votes.values())
-        vote_winners = [bot.get_user(u_id) for u_id, count in v_view.votes.items() if count == max_v]
-
-        if len(vote_winners) > 1:
-            await interaction.channel.send(f"⚖️ Tie between: {', '.join([w.display_name for w in vote_winners])}. Re-voting...")
-            current_targets = vote_winners
-            continue
+        teams_embed = discord.Embed(
+            title="Team Assignments", 
+            description="The host will record the result upon match completion.", 
+            color=EMBED_COLOR
+        )
+        teams_embed.add_field(name="Team 1", value="\n".join([p.mention for p in team1]))
+        teams_embed.add_field(name="Team 2", value="\n".join([p.mention for p in team2]))
         
-        ejected = vote_winners[0]
-        break
+        match_view = MatchOverView(host=interaction.user)
+        await interaction.channel.send(embed=teams_embed, view=match_view)
 
-    # 6. FINAL RESULTS
-    impostor_won = (ejected.id != impostor.id)
-    result_title = "🚩 IMPOSTOR WINS" if impostor_won else "✅ CREWMATES WIN"
-    final_embed = discord.Embed(title=result_title, color=0x2f3136)
-    final_embed.add_field(name="The Impostor was:", value=impostor.mention)
-    final_embed.add_field(name="The Group Ejected:", value=ejected.mention)
-    await interaction.channel.send(embed=final_embed)
+        # 3. WAIT FOR MATCH RESULT
+        await match_view.match_finished.wait()
+        
+        # 4. AUTO-LOSS CHECK
+        losers = team1 if match_view.losing_team == "Team 1" else team2
+        if impostor not in losers:
+            fail_embed = discord.Embed(
+                title="Impostor Defeated",
+                description=f"Target: {impostor.mention}\nReason: The Impostor's assigned team was victorious. The objective was failed.",
+                color=EMBED_COLOR
+            )
+            return await interaction.channel.send(embed=fail_embed)
+
+        # 5. VOTING PHASE
+        current_targets = losers
+        while True:
+            vote_embed = discord.Embed(
+                title="Voting Phase Active", 
+                description=f"The Impostor is confirmed to be among the defeated team: {', '.join([p.display_name for p in losers])}.\nSubmit your selection below.",
+                color=EMBED_COLOR
+            )
+            v_view = VoteView(current_targets, view.participants, vote_embed)
+            v_msg = await interaction.channel.send(embed=vote_embed, view=v_view)
+            await v_view.wait()
+            
+            if not v_view.votes:
+                await interaction.channel.send("Zero votes registered. Initiating recount protocol...")
+                continue
+
+            max_v = max(v_view.votes.values())
+            vote_winners = [bot.get_user(u_id) for u_id, count in v_view.votes.items() if count == max_v]
+
+            if len(vote_winners) > 1:
+                await interaction.channel.send(f"Tie detected between: {', '.join([w.display_name for w in vote_winners])}. Initiating tie-breaker phase...")
+                current_targets = vote_winners
+                continue
+            
+            ejected = vote_winners[0]
+            break
+
+        # 6. FINAL RESULTS
+        impostor_won = (ejected.id != impostor.id)
+        result_title = "Impostor Victorious" if impostor_won else "Group Victorious"
+        final_embed = discord.Embed(title=result_title, color=EMBED_COLOR)
+        final_embed.add_field(name="Confirmed Impostor:", value=impostor.mention)
+        final_embed.add_field(name="Player Ejected:", value=ejected.mention)
+        await interaction.channel.send(embed=final_embed)
+
+    except asyncio.CancelledError:
+        # This triggers instantly if an admin runs /cancel
+        cancel_embed = discord.Embed(
+            title="Protocol Terminated", 
+            description="The match protocol was forcefully aborted by a system administrator.", 
+            color=EMBED_COLOR
+        )
+        await interaction.channel.send(embed=cancel_embed)
+        raise # Ensures the task closes properly
+
+    finally:
+        # Cleanup: Remove the task from the system when the game naturally ends or is cancelled
+        if interaction.channel_id in active_matches:
+            del active_matches[interaction.channel_id]
+
+
+@bot.tree.command(name="cancel", description="Administrator Override: Terminate the active match in this channel.")
+@app_commands.default_permissions(administrator=True) # Locks command to Admins
+async def cancel(interaction: discord.Interaction):
+    if interaction.channel_id in active_matches:
+        # Instantly stops the /start task
+        active_matches[interaction.channel_id].cancel()
+        
+        # Remove from dictionary
+        del active_matches[interaction.channel_id]
+        
+        await interaction.response.send_message("Termination signal dispatched.", ephemeral=True)
+    else:
+        await interaction.response.send_message("No active match protocols detected in this channel.", ephemeral=True)
+
 
 bot.run(os.environ.get('DISCORD_TOKEN'))
