@@ -156,9 +156,9 @@ async def start(interaction: discord.Interaction, seconds: int):
         
         impostor_team_name = "Team 1" if impostor in team1 else "Team 2"
         await impostor.send(
-            "**CLASSIFIED DIRECTIVE**\n"
-            f"Role: Impostor\nAssignment: {impostor_team_name}\n"
-            "Objective: Ensure the defeat of your assigned team without being detected by the group."
+            "**You are the Impostor**\n"
+            f"Assignment: {impostor_team_name}\n"
+            "Objective: Ensure that your team is defeated, without being detected by the group."
         )
 
         teams_embed = discord.Embed(
