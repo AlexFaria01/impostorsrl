@@ -145,7 +145,7 @@ async def start(interaction: discord.Interaction, seconds: int):
         await interaction.edit_original_response(embed=entry_embed, view=view)
 
         if len(view.participants) < 2 or len(view.participants) % 2 != 0:
-            return await interaction.channel.send("Process terminated. An even number of participants is required.")
+            return await interaction.channel.send("An even number of participants is required.")
 
         # 2. ASSIGN TEAMS & IMPOSTOR
         random.shuffle(view.participants)
