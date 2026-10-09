@@ -1,4 +1,4 @@
-# 🕵️ ImpostorSRL
+# 🕵️ ImpostorsRL
 
 A Discord bot for playing the **Impostor** mini-game in Rocket League. One player is secretly assigned to sabotage their own team — can the group figure out who it is?
 
